@@ -1,2 +1,3 @@
 # PES_plotter
-plots a PES from a cantera cti file
+plots enthalpy vs activation energy from a cantera cti file
+credit to https://github.com/giacomomarchioro/PyEnergyDiagrams for backend
