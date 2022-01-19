@@ -5,6 +5,7 @@ sys.path.append(f'{os.getcwd()}/tools/PyEnergyDiagram')
 print(os.getcwd())
 from energydiagram import ED
 import logging
+from matplotlib.lines import Line2D
 
 ############################################
 #
@@ -16,7 +17,59 @@ import logging
 #
 ############################################
 
-class pes_reaction_combine():
+class single_species():
+    """
+    takes a single "species" cantera object. 
+
+    Arguments:
+    Energy - enthalpy, for y placement on energy diagram
+    level - x position on energy diagram. integer 0, 1, 2, etc. 
+    """
+    def __init__(
+            self,
+            species,
+            position,
+            reverse=False,
+            ):
+
+        self.h_eV = (species.thermo.h(temp)/1000**2)/96
+        self.name = species.name
+
+        self.energy = h_eV  # 0
+        self.position = position # 1
+        self.bottom_text = name  # 2
+        self.top_text = ''
+        self.color = 'k'  
+        self.right_text = ''
+        self.left_text = ''
+
+class comb_species():
+    """
+    makes a grouping of reactants or products. can be used with a single species. 
+    """
+    def __init__(
+            self,
+            species,
+            position,
+            reverse=False,
+            ):
+
+        name = ''
+        for i in species: 
+            self.h_eV += (species.thermo.h(temp)/1000**2)/96
+            name = name + ' + ' + species.name
+        
+        self.name = name
+
+        self.species = species
+        self.energy = h_eV  # 0
+        self.position = position # 1
+        self.top_text = ''
+        self.color = 'k'  
+        self.right_text = ''
+        self.left_text = ''
+
+class pes_reaction():
     """
     feed in a cantera reaction, get an object out of it that we can use for making a chart
 
@@ -114,65 +167,14 @@ class pes_reaction_combine():
 
         self.barrier = round(self.barrier, 3)
 
-class pes_reaction():
-    """
-    feed in a cantera reaction, get an object out of it that we can use for making a chart
-
-    arguments: 
-    reaction - a ct reaction object
-    phase_gas - gas phase in mechanism (for looking up species)
-    phase_surf - solid phase in mechanism (for looking up species)
-    reverse - bool, True if we swap reactants and products, and change Ea to Ea from products
-
-    properties:
-    reactants - dict, species names as keys, Hf as value
-    products - dict, species names as keys, Hf as value
-    barrier - float, Ea for reaction as value
-    equation - string, cantera reaction equation
-    links - list of ids for connecting the diagram
-            [[reactant ids], Ea id, [product ids]]
-    """
-    def __init__(
-        self,
-        reaction,
-        phase_gas,
-        phase_surf,
-        ):
-
-        self.equation = reaction.equation
-        self.reactants  = {}
-        self.products  = {}
-
-        # lookup each reactant, put in dictionary as 
-        # {species_name : enthalpy at phase temp (in Ev) * stoich coeff}
-        total_reac_enth = 0
-        for i in reaction.reactants: 
-            if i in phase_gas.species_names:
-                phase = phase_gas
-            elif i in phase_surf.species_names:
-                phase = phase_surf
-            else: 
-                logging.error(f"species {i} cannot be found")
-            
-            self.reactants[i] = reaction.reactants[i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
-            total_reac_enth += self.reactants[i]
-            self.reactants[i] = round(self.reactants[i],3)
-
-        for i in reaction.products: 
-            if i in phase_gas.species_names:
-                phase = phase_gas
-            elif i in phase_surf.species_names:
-                phase = phase_surf
-            else: 
-                logging.error(f"species {i} cannot be found")
-
-            self.products[i] = reaction.products[i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
-            self.products[i] = round(self.products[i],3)
-
-        # reaction activation energy. need to add to 
-        # reactant enthalpy to get barrier
-        self.barrier = (reaction.rate.activation_energy/1000**2)/96 + total_reac_enth
-        self.barrier = round(self.barrier, 3)
+        self.energy = self.barrier
+        self.name = self.equation
+        self.position = position
+        self.bottom_text =
+        self.top_text = ''
+        self.color = 'k'  
+        self.right_text = ''
+        self.left_text = ''
 
 class pes_plot():
     """
@@ -212,24 +214,6 @@ class pes_plot():
         # initialize the reaction object dictionary
         self.pes_rxn_dict = {}
 
-    def get_h_ev(self, species, temp):
-        """
-        gets species enthalpy in eV. 
-        species is a cantera Species object
-        """
-        h_eV = (species.thermo.h(temp)/1000**2)/96
-        print(f'{species.name} enthalpy = {h_eV} eV')
-        return h_eV
-
-    def get_ea_ev(self, reaction):
-        """
-        gets reaction Ea in eV. 
-        reaction is a cantera Reaction object
-        """
-        Ea_eV = (reaction.rate.activation_energy/1000**2)/96
-        print(f'{reaction.equation} enthalpy = {Ea_eV} eV')
-        return Ea_eV
-
     def find_reactions(self, species, temp):
         """
         find all reactions that involve a certain species or set of species.
@@ -241,26 +225,26 @@ class pes_plot():
         print(species_names)
         # get combined H for species as the starting point for Ea
         
-        for i,j in enumerate(self.gas.reactions()):
-            if all(x in j.reactants.keys() for x in species_names):
-                pes_obj = pes_reaction_combine(j, self.gas, self.surf)
+        for index,rxn in enumerate(self.gas.reactions()):
+            if all(x in rxn.reactants.keys() for x in species_names):
+                pes_obj = pes_reaction(rxn, self.gas, self.surf)
                 pes_rxn_dict[pes_obj.equation] = pes_obj
 
             # if we want to show the reverse reaction, specify that 
-            # in call to pes_reaction_combine
+            # in call to pes_reaction
             if all(x in j.products.keys() for x in species_names):
-                pes_obj = pes_reaction_combine(j, self.gas, self.surf, reverse=True)
+                pes_obj = pes_reaction(j, self.gas, self.surf, reverse=True)
                 pes_rxn_dict[pes_obj.equation] = pes_obj
                 
         for i,j in enumerate(self.surf.reactions()):
             if all(x in j.reactants.keys() for x in species_names):
-                pes_obj = pes_reaction_combine(j, self.gas, self.surf)
+                pes_obj = pes_reaction(j, self.gas, self.surf)
                 pes_rxn_dict[pes_obj.equation] = pes_obj
 
             # if we want to show the reverse reaction, specify that 
-            # in call to pes_reaction_combine
+            # in call to pes_reaction
             if all(x in j.products.keys() for x in species_names):
-                pes_obj = pes_reaction_combine(j, self.gas, self.surf, reverse=True)
+                pes_obj = pes_reaction(j, self.gas, self.surf, reverse=True)
                 pes_rxn_dict[pes_obj.equation] = pes_obj
         
         # if no reactions are found, throw an error
@@ -269,9 +253,28 @@ class pes_plot():
                 
         return pes_rxn_dict
 
+    def update_diag_data():
+        
+
+
+        self.diagram.data = list(zip(
+            self.energies,  # 0
+            self.positions,  # 1
+            self.bottom_texts,  # 2
+            self.top_texts,  # 3
+            self.colors,  # 4
+            self.right_texts,  # 5
+            self.left_texts,))  # 6
+    
+
+    def update_diagram_links():
+        
+
+
     def plot_pes_diagram(
         self, 
-        species, 
+        species,
+        products=None, 
         width=20, 
         height=40, 
         offset=None,
@@ -286,6 +289,7 @@ class pes_plot():
 
         inputs:
         species - (str or [strs]) matching starting reactant species name in cantera mechanism.
+        products - (str or [strs]) if specified, required products for the output reactions
         width - (float) matplotlib plot width in inches
         height - (float) matplotlib plot height in inches
         offset - (float) vertical distance that energy level and upper/lower labels are spaced
@@ -293,6 +297,14 @@ class pes_plot():
         space - (float) distance between bars for energy levels
         combined - (bool) if true combine all reactants to a single energy level. do the same for products.
         """
+        # self.data = list(zip(self.energies,  # 0
+        #                 self.positions,  # 1
+        #                 self.bottom_texts,  # 2
+        #                 self.top_texts,  # 3
+        #                 self.colors,  # 4
+        #                 self.right_texts,  # 5
+        #                 self.left_texts,))  # 6
+
 
         # get a list of all reactions containing the two species identified
         species_obj = []
@@ -354,7 +366,7 @@ class pes_plot():
             self.diagram.add_link(i.links[0],i.links[1])
             self.diagram.add_link(i.links[1],i.links[2])
 
-        # optional arguements 
+        # optional arguments 
         if space: 
             self.diagram.space = space
         if offset:
