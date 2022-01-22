@@ -1,11 +1,13 @@
 import cantera as ct
 import os
 import sys
-sys.path.append(f'{os.getcwd()}/tools/PyEnergyDiagram')
+sys.path.append(f'{os.getcwd()}/PyEnergyDiagram')
 print(os.getcwd())
 from energydiagram import ED
 import logging
 from matplotlib.lines import Line2D
+import itertools
+import copy
 
 ############################################
 #
@@ -29,19 +31,15 @@ class single_species():
             self,
             species,
             position,
-            reverse=False,
+            temp,
             ):
 
         self.h_eV = (species.thermo.h(temp)/1000**2)/96
+        self.energy = round(self.h_eV, 3) 
         self.name = species.name
+        self.position = position
+        self.index = -1 #index in diagram. used for connections
 
-        self.energy = h_eV  # 0
-        self.position = position # 1
-        self.bottom_text = name  # 2
-        self.top_text = ''
-        self.color = 'k'  
-        self.right_text = ''
-        self.left_text = ''
 
 class comb_species():
     """
@@ -51,23 +49,20 @@ class comb_species():
             self,
             species,
             position,
-            reverse=False,
+            temp,
             ):
 
-        name = ''
-        for i in species: 
-            self.h_eV += (species.thermo.h(temp)/1000**2)/96
-            name = name + ' + ' + species.name
+        self.h_eV = 0
+        self.name_list = []
+        for spec in species: 
+            self.h_eV += (spec.thermo.h(temp)/1000**2)/96
+            self.name_list.append(spec.name)
         
-        self.name = name
-
+        self.energy = round(self.h_eV, 3)
+        self.name = "+".join(self.name_list)
         self.species = species
-        self.energy = h_eV  # 0
-        self.position = position # 1
-        self.top_text = ''
-        self.color = 'k'  
-        self.right_text = ''
-        self.left_text = ''
+        self.position = position
+        self.index = -1 #index in diagram. used for connections
 
 class pes_reaction():
     """
@@ -82,27 +77,26 @@ class pes_reaction():
     properties:
     reactants - dict, reactant string as key (e.g. "CO2+H2O"), combined Hf as value
     products - dict, reactant string as key (e.g. "CO2+H2O"), combined Hf as value
+    ind_reac - list, individual reactant strings that participate in the reaction
+    ind_prod - list, individual product strings that participate in the reaction
     barrier - float, Ea for reaction as value
     equation - string, cantera reaction equation
-    links - list of ids for connecting the diagram
-            [reactant id, Ea id, product id]
-    positions - int, list of positions for reactants, reactions, and products. 
-            [reactant pos, Reaction Ea pos, product pos]
     """
     def __init__(
         self,
         reaction,
+        position,
         phase_gas,
         phase_surf,
         reverse=False,
         ):
 
+        self.orig_equation = reaction.equation
         self.equation = reaction.equation
-        self.reactants  = {}
-        self.products  = {}
-        self.links = [-1,-1,-1]
-        self.positions = [-1, -1, -1]
-
+        self.reactants  = {}  # combined reactants
+        self.products  = {}   # combined products
+        self.ind_reac = []    # individual reactants
+        self.ind_prod = []    # individual products
 
         if reverse:
             reactants_obj = reaction.products
@@ -124,7 +118,8 @@ class pes_reaction():
         # lookup each reactant, put in dictionary as 
         # {species_name : enthalpy at phase temp (in Ev) * stoich coeff}
         total_reac_enth = 0
-        reac_str = ""
+        reac_str = "+".join(reactants_obj)
+
         for i in reactants_obj: 
             if i in phase_gas.species_names:
                 phase = phase_gas
@@ -133,15 +128,15 @@ class pes_reaction():
             else: 
                 logging.error(f"species {i} cannot be found")
 
-            reac_str += f"{i} "
             total_reac_enth += reactants_obj[i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
+            self.ind_reac.append(i)
 
-        reac_str = reac_str.strip()
         self.reactants[reac_str] = total_reac_enth 
         self.reactants[reac_str] = round(self.reactants[reac_str],3)
 
         total_prod_enth = 0
-        prod_str = ""
+        prod_str = "+".join(products_obj)
+
         for i in products_obj: 
             if i in phase_gas.species_names:
                 phase = phase_gas
@@ -150,10 +145,9 @@ class pes_reaction():
             else: 
                 logging.error(f"species {i} cannot be found")
 
-            prod_str += f"{i} "
             total_prod_enth += products_obj[i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
+            self.ind_prod.append(i)
         
-        prod_str = prod_str.strip()
         self.products[prod_str] = total_prod_enth 
         self.products[prod_str] = round(self.products[prod_str],3)
 
@@ -165,16 +159,10 @@ class pes_reaction():
         else: 
             self.barrier = (reaction.rate.activation_energy/1000**2)/96 + total_reac_enth
 
-        self.barrier = round(self.barrier, 3)
-
-        self.energy = self.barrier
-        self.name = self.equation
+        self.energy = round(self.barrier, 3)
         self.position = position
-        self.bottom_text =
-        self.top_text = ''
-        self.color = 'k'  
-        self.right_text = ''
-        self.left_text = ''
+        self.name = self.equation.strip()
+        self.index = -1 #index in diagram. used for connections
 
 class pes_plot():
     """
@@ -213,359 +201,192 @@ class pes_plot():
 
         # initialize the reaction object dictionary
         self.pes_rxn_dict = {}
+        self.species_list = []
+        self.comb_species_list = []
+        self.reaction_list = []
 
-    def find_reactions(self, species, temp):
+    def purge(self, position):
+        # purge all components at a given position
+        # make copies for iterating
+
+        self.species_list = list(filter(lambda num: num.position != position ,self.species_list))
+        self.comb_species_list = list(filter(lambda num: num.position != position ,self.comb_species_list))
+        self.reaction_list = list(filter(lambda num: num.position != position ,self.reaction_list))
+
+    def update_diag_data(self):
         """
-        find all reactions that involve a certain species or set of species.
-        species is a species object
-        pes_rxn_dict is a dictionary, reaction equation is the key, PES reaction object is the value
+
         """
-        pes_rxn_dict = {}
-        species_names = [i.name for i in species]
-        print(species_names)
-        # get combined H for species as the starting point for Ea
+        self.diagram.reset()
+        mechanism_list = self.species_list+self.comb_species_list+self.reaction_list
+        for index,item in enumerate(mechanism_list):
+            self.diagram.add_level(
+                item.energy,
+                bottom_text=item.name, 
+                position=item.position, 
+                color='k',
+                top_text='Energy', 
+                right_text='', 
+                left_text=''
+                )
+            item.index = index
         
-        for index,rxn in enumerate(self.gas.reactions()):
-            if all(x in rxn.reactants.keys() for x in species_names):
-                pes_obj = pes_reaction(rxn, self.gas, self.surf)
-                pes_rxn_dict[pes_obj.equation] = pes_obj
-
-            # if we want to show the reverse reaction, specify that 
-            # in call to pes_reaction
-            if all(x in j.products.keys() for x in species_names):
-                pes_obj = pes_reaction(j, self.gas, self.surf, reverse=True)
-                pes_rxn_dict[pes_obj.equation] = pes_obj
-                
-        for i,j in enumerate(self.surf.reactions()):
-            if all(x in j.reactants.keys() for x in species_names):
-                pes_obj = pes_reaction(j, self.gas, self.surf)
-                pes_rxn_dict[pes_obj.equation] = pes_obj
-
-            # if we want to show the reverse reaction, specify that 
-            # in call to pes_reaction
-            if all(x in j.products.keys() for x in species_names):
-                pes_obj = pes_reaction(j, self.gas, self.surf, reverse=True)
-                pes_rxn_dict[pes_obj.equation] = pes_obj
+        # draw links as appropriate.
+        # if species have a "combined_species" to the left or right that they're in, add link
+        # if combined species have a reaction to the left that they are in, add link
+        for spec in self.species_list:
+            for spec_c in self.comb_species_list:
+                if spec.name in spec_c.name_list:
+                    if spec_c.position == spec.position + 1:
+                        self.diagram.add_link(
+                            spec.index, 
+                            spec_c.index,
+                            color='k',
+                            ls='--',
+                            linewidth=1,
+                            )
+                    elif spec_c.position == spec.position - 1:
+                        self.diagram.add_link(
+                            spec_c.index, 
+                            spec.index,
+                            color='k',
+                            ls='--',
+                            linewidth=1,
+                            )
         
-        # if no reactions are found, throw an error
-        if len(pes_rxn_dict)==0:
-            raise Exception(f"no reactions found with reactants {species}")
-                
-        return pes_rxn_dict
+        for spec_c in self.comb_species_list:
+            for rxn in self.reaction_list:
+                if spec_c.name in rxn.reactants and rxn.position == spec_c.position + 1:
+                    self.diagram.add_link(
+                        spec_c.index, 
+                        rxn.index,
+                        color='k',
+                        ls='--',
+                        linewidth=1,
+                        )
+                elif spec_c.name in rxn.products and rxn.position == spec_c.position - 1:
+                    self.diagram.add_link(
+                        rxn.index, 
+                        spec_c.index,
+                        color='k',
+                        ls='--',
+                        linewidth=1,
+                        )
 
-    def update_diag_data():
+
+    # def update_diagram_links():
+    def plot(self):
+        self.update_diag_data()
+        self.diagram.offset = 0.01
+        self.diagram.plot(show_IDs=True, ylabel="Energy / $eV$", width=20, height=10)
         
-
-
-        self.diagram.data = list(zip(
-            self.energies,  # 0
-            self.positions,  # 1
-            self.bottom_texts,  # 2
-            self.top_texts,  # 3
-            self.colors,  # 4
-            self.right_texts,  # 5
-            self.left_texts,))  # 6
     
-
-    def update_diagram_links():
-        
-
-
-    def plot_pes_diagram(
-        self, 
-        species,
-        products=None, 
-        width=20, 
-        height=40, 
-        offset=None,
-        dimension=None,
-        space=None,
-        combined=True,
-        ):
+    def add_species(self, species, position):
         """
-        plots a potential energy surface given an input for species.
-        the "species" are the starting point for the mechanism. each successive 
-        run will take an input of the species and get all reactions for that pair. 
-
-        inputs:
-        species - (str or [strs]) matching starting reactant species name in cantera mechanism.
-        products - (str or [strs]) if specified, required products for the output reactions
-        width - (float) matplotlib plot width in inches
-        height - (float) matplotlib plot height in inches
-        offset - (float) vertical distance that energy level and upper/lower labels are spaced
-        dimension - (float) width of platform used for energy level 
-        space - (float) distance between bars for energy levels
-        combined - (bool) if true combine all reactants to a single energy level. do the same for products.
-        """
-        # self.data = list(zip(self.energies,  # 0
-        #                 self.positions,  # 1
-        #                 self.bottom_texts,  # 2
-        #                 self.top_texts,  # 3
-        #                 self.colors,  # 4
-        #                 self.right_texts,  # 5
-        #                 self.left_texts,))  # 6
-
-
-        # get a list of all reactions containing the two species identified
-        species_obj = []
-        for i in species:
-            if i in self.gas.species_names:
-                species_obj.append(self.gas.species(i))
-            elif i in self.surf.species_names:
-                species_obj.append(self.surf.species(i))
-            else:
-                print(f'species {i} not found!')
-
-        rxns = self.find_reactions(species_obj, self.temp)
-        self.pes_rxn_dict.update(rxns)
-
-        link_num = 0
-        for i,j in self.pes_rxn_dict.items():
-            # generate a pes plot for each pes_reaction reactant
-            for k,l in j.reactants.items():
-                reac = k
-                H_r = l
-
-                # make a new energy level
-                self.diagram.add_level(H_r, k, 0)
-                j.positions[0] = 0
-                    
-            j.links[0] = link_num
-            link_num+=1
-
-        for i,j in self.pes_rxn_dict.items():
-            # plot rxn Ea. for it to show up between species, should be here
-            rxn_eq = j.equation
-            rxn_Ea = j.barrier
-
-            # make a new energy level
-            self.diagram.add_level(rxn_Ea, rxn_eq, 1)
-            j.positions[1] = 1
-            
-            j.links[1] = link_num
-            link_num+=1
-
-        for i,j in self.pes_rxn_dict.items():
-            # generate a pes plot for each pes_reaction product
-
-            for k,l in j.products.items():
-                prod = k
-                H_p = l
-
-                # make a new energy level
-                self.diagram.add_level(H_p, prod,2)
-                j.positions[2] = 2
-
-            # add link id for line drawing
-            j.links[2] = link_num
-            link_num+=1
-
-        
-        for i in self.pes_rxn_dict.values():
-            # get connections between each reac - Ea and each Ea - product
-            self.diagram.add_link(i.links[0],i.links[1])
-            self.diagram.add_link(i.links[1],i.links[2])
-
-        # optional arguments 
-        if space: 
-            self.diagram.space = space
-        if offset:
-            self.diagram.offset = offset
-        if dimension:
-            self.diagram.dimension = dimension
-
-        self.diagram.plot(show_IDs=True, ylabel="Energy / $eV$", width=width, height=height)
-
-    def add_next_reaction(
-        self, 
-        species, 
-        width, 
-        height, 
-        offset=None,
-        dimension=None,
-        space=None,
-        ):
-        """
-        adds the next reaction to the plot. 
-        
-        species is the product species selected for the next step
+        accepts 
+        species - a string for a species 
+        position - an integer for the position of the species
         """
 
-        # get a list of all reactions containing the species identified
-        species_obj = []
-        for i in species:
-            if i in self.gas.species_names:
-                species_obj.append(self.gas.species(i))
-            elif i in self.surf.species_names:
-                species_obj.append(self.surf.species(i))
+        if any((species==spec.name and position==spec.position) for spec in self.species_list):
+                print(f'species {species} already in this diagram position')
 
-        rxns = self.find_reactions(species_obj, self.temp)
-        self.pes_rxn_dict.update(rxns)
+        elif species in self.gas.species_names:
+            new_spec = single_species(
+                self.gas.species(species),
+                position,
+                self.gas.T
+                )
+            self.species_list.append(new_spec)
 
-        # ED.position can be assigned to an integer (1,2,3,4, etc) 
-        # so we do not need to use "l"
-        # get starting position (whatever the last energy level position was)
-        starting_pos = max(self.diagram.positions)
+        elif species in self.surf.species_names:
+            new_spec = single_species(
+                self.surf.species(species),
+                position,
+                self.gas.T
+                )
+            self.species_list.append(new_spec)
+        else: 
+            print(f'species {species} could not be found, so it was not added')
 
-        link_num = len(self.diagram.data)
-
-        for i,j in rxns.items():
-            # generate a pes plot for each pes_reaction
-            for k,l in self.pes_rxn_dict[i].reactants.items():
-                reac = k
-                H_r = l
-
-                # make a new energy level
-                self.diagram.add_level(H_r, k, starting_pos)
-                self.pes_rxn_dict[i].positions[0] = starting_pos
-                    
-            self.pes_rxn_dict[i].links[0] = link_num
-            link_num+=1
-
-        for i,j in rxns.items():   
-            # plot rxn Ea. for it to show up between species, should be here
-            rxn_eq = self.pes_rxn_dict[i].equation
-            rxn_Ea = self.pes_rxn_dict[i].barrier
-
-            # make a new energy level
-            self.diagram.add_level(rxn_Ea, rxn_eq, starting_pos + 1)
-            self.pes_rxn_dict[i].positions[1] = starting_pos + 1
-            
-            self.pes_rxn_dict[i].links[1] = link_num
-            link_num+=1
-
-        for i,j in rxns.items():  
-            # generate a pes plot for each pes_reaction 
-            for k,l in self.pes_rxn_dict[i].products.items():
-                prod = k
-                H_p = l
-
-                # make a new energy level
-                self.diagram.add_level(H_p, prod,starting_pos + 2)
-                self.pes_rxn_dict[i].positions[2] = starting_pos + 2
-
-            # add link id for line drawing
-            self.pes_rxn_dict[i].links[2] = link_num
-            link_num+=1
-
-        
-        for i,j in rxns.items():
-            # get connections between each reac - Ea and each Ea-product
-            self.diagram.add_link(self.pes_rxn_dict[i].links[0],self.pes_rxn_dict[i].links[1])
-            self.diagram.add_link(self.pes_rxn_dict[i].links[1],self.pes_rxn_dict[i].links[2])
-
-        # optional arguements 
-        if space: 
-            self.diagram.space = space
-        if offset:
-            self.diagram.offset = offset
-        if dimension:
-            self.diagram.dimension = dimension
-        
-        self.diagram.plot(show_IDs=True, ylabel="Energy / $eV$", width=width, height=height)
-
-
-
-    def _redraw(
-        self,
-        width=20, 
-        height=40,
-        offset=None,
-        dimension=None,
-        space=None,
-        ):
-
-        """ redraw after a trim"""
-        
-        # create new reaction diagram object 
-        # (is there a more efficient way to erase the old one?)
-        self.diagram = ED()
-
-        link_num = 0
-        for i,j in self.pes_rxn_dict.items():
-
-            # generate a pes plot for each pes_reaction reactant
-            for k,l in j.reactants.items():
-                reac = k
-                H_r = l
-
-                # make a new energy level
-                self.diagram.add_level(H_r, k, j.positions[0])
-                
-            rxn_eq = j.equation
-            rxn_Ea = j.barrier
-
-            # make a new energy level
-            self.diagram.add_level(rxn_Ea, rxn_eq, j.positions[1])
-
-            # generate a pes plot for each pes_reaction product
-            for k,l in j.products.items():
-                prod = k
-                H_p = l
-
-                # make a new energy level
-                self.diagram.add_level(H_p, prod, j.positions[2])
-
-        self.diagram.create_data()
-
-        # go through reaction dictionary and match reactant and product entries
-        # match only adjacent ones
-        for i,j in self.pes_rxn_dict.items():
-            for m,n in enumerate(self.diagram.data):
-
-                # there has to be a better way to do this ".keys())[0]"" nonsense
-                if str(list(j.reactants.keys())[0]) == n[2] and j.positions[0] == n[1]:
-                    j.links[0] = m
-                    position = n[1]
-                
-                if j.equation == n[2] and j.positions[1] == n[1]:
-                    j.links[1] = m
-
-                if str(list(j.products.keys())[0]) == n[2] and j.positions[2] == n[1]:
-                    j.links[2] = m
-
-
-        # need to figure out how to add links
-        for i in self.pes_rxn_dict.values():
-            # get connections between each reac - Ea and each Ea - product
-            self.diagram.add_link(i.links[0],i.links[1])
-            self.diagram.add_link(i.links[1],i.links[2])
-
-        # optional arguements 
-        if space: 
-            self.diagram.space = space
-        if offset:
-            self.diagram.offset = offset
-        if dimension:
-            self.diagram.dimension = dimension
-
-        self.diagram.plot(show_IDs=True, ylabel="Energy / $eV$", width=width, height=height)
-
-    def trim(
-        self, 
-        reac, 
-        width=20, 
-        height=40,
-        offset=None,
-        dimension=None,
-        space=None,
-        ):
+    def add_combined_species(self, species, position):
         """
-        trims the specified reactions and their species from plot. 
-
-        updates the pes_rxn_object to remove reactions we do not want. 
-        runs through diagram.data and pes_rxn_object to update all of the links
-        
-        reac is the reaction to be trimmed (will remove reactants + products)
+        accepts 
+        species - a list of strings for a the species 
+        position - an integer for the position of the species
         """
-        
-        for key in list(self.pes_rxn_dict.keys()):
-            if reac == key: 
-                del self.pes_rxn_dict[key]
-        
-        self._redraw()
+
+        if len(species) > 3:
+            logging.error("4 reactants and beyond not supported")
 
 
-            
+        # check for combined species 
+        # species1 + species2 
+        # and 
+        # species2 + species 1
+        reac_perms = []
+        if isinstance(species, (list, tuple)):
+            perms = itertools.permutations(species)
+            for set in list(perms):
+                reac_str = "+".join(set)
+                reac_perms.append(reac_str)
 
-        
+
+        if any((spec_c.name in reac_perms and spec_c.position == position) for spec_c in self.comb_species_list):
+                print(f'species {species} already in this diagram position')
+
+        else:
+            spec_list = []
+            for spec in species:
+                if spec in self.gas.species_names:
+                    spec_list.append(self.gas.species(spec))
+                elif spec in self.surf.species_names:
+                    spec_list.append(self.surf.species(spec))
+                else: 
+                    print(f'species {species} could not be found, so it was not added')
+          
+            if len(spec_list) == len(species):
+                new_comb_species = comb_species(
+                    spec_list,
+                    position, 
+                    self.gas.T
+                    )
+                self.comb_species_list.append(new_comb_species)
+            else: 
+                print(f'could not make combined species object. ensure all species names are correct')
+
+
+    def add_reaction(self, reaction, position, reverse=False):
+        """
+        accepts 
+        reaction - a string for the reaction
+        position - an integer for the position of the reaction
+        """
+
+        if any((reaction==rxn.orig_equation and position==rxn.position) for rxn in self.reaction_list):
+                print(f'reaction {reaction} already in this diagram position')
+
+        elif reaction in self.gas.reaction_equations():
+            rxn_index = self.gas.reaction_equations().index(reaction)
+            new_rxn = pes_reaction(
+                self.gas.reaction(rxn_index),
+                position,
+                self.gas,
+                self.surf,
+                reverse,
+                )
+            self.reaction_list.append(new_rxn)
+
+        elif reaction in self.surf.reaction_equations():
+            rxn_index = self.surf.reaction_equations().index(reaction)
+            new_rxn = pes_reaction(
+                self.surf.reaction(rxn_index),
+                position,
+                self.gas,
+                self.surf,
+                reverse,
+                )
+            self.reaction_list.append(new_rxn)
+        else: 
+            print(f'species {species} could not be found, so it was not added')
+

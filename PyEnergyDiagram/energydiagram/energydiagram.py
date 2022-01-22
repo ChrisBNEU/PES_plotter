@@ -44,6 +44,31 @@ class ED:
         self.fig = None
         self.ax = None
 
+    def reset(self):
+        # plot parameters
+        self.ratio = 1.6181
+        self.dimension = 'auto'
+        self.space = 'auto'
+        self.offset = 'auto'
+        self.offset_ratio = 0.02
+        self.color_bottom_text = 'blue'
+        self.aspect = 'equal'
+        self.data = []
+        self.pos_number = 0
+        self.energies = []
+        self.positions = []
+        self.colors = []
+        self.top_texts = []
+        self.bottom_texts = []
+        self.left_texts = []
+        self.right_texts = []
+        self.links = []
+        self.arrows = []
+        self.electons_boxes = []
+        # matplotlib figure handlers
+        self.fig = None
+        self.ax = None
+    
     def add_level(self, energy, bottom_text='', position=None, color='k',
                   top_text='Energy', right_text='', left_text=''):
         '''
