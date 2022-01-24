@@ -2,7 +2,6 @@ import cantera as ct
 import os
 import sys
 sys.path.append(f'{os.getcwd()}/PyEnergyDiagram')
-print(os.getcwd())
 from energydiagram import ED
 import logging
 from matplotlib.lines import Line2D
@@ -57,10 +56,13 @@ class comb_species():
         self.h_eV = 0
         self.name_list = []
         self.stoich_name_list = []
-        if isinstance(species[0], str):
+        self.reactants = {}
+        if isinstance(species[0], ct.Species):
             for spec in species: 
                 self.h_eV += (spec.thermo.h(temp)/1000**2)/96
                 self.name_list.append(spec.name)
+                self.reactants.update({spec.name:1})
+                self.stoich_name_list.append(spec.name)
 
         elif isinstance(species[0], tuple):
             for spec,stoich in species: 
@@ -68,8 +70,11 @@ class comb_species():
                 self.name_list.append(spec.name)
                 if stoich > 1:
                     self.stoich_name_list.append(str(stoich) + spec.name)
+                    self.reactants.update({spec.name:stoich})
                 else: 
                     self.stoich_name_list.append(spec.name)
+                    self.reactants.update({spec.name:1})
+
         
 
         self.energy = round(self.h_eV, 3)
@@ -77,6 +82,23 @@ class comb_species():
         self.species = species
         self.position = position
         self.index = -1 #index in diagram. used for connections
+
+    def link_rxn(self,reaction):
+        """
+        checks if combined species object is in a given reaction
+        and if it is adjacent to it (position = reaction position +/-1)
+         0 if it is not appropriate to link, 
+         1 if it creates a forward link,
+        -1 if it is a reverse link
+        """
+        link = 0
+        # if all the species in the combined reactants are in the reaction
+        if self.reactants == reaction.reac_stoich and reaction.position == self.position + 1:
+            link = 1
+        elif self.reactants == reaction.prod_stoich and reaction.position == self.position - 1:
+            link = -1
+
+        return link           
 
 class pes_reaction():
     """
@@ -113,8 +135,8 @@ class pes_reaction():
         self.ind_prod = []    # individual products
 
         if reverse:
-            reactants_obj = reaction.products
-            products_obj = reaction.reactants
+            self.reac_stoich = reaction.products   # dict, {spec: stoich}
+            self.prod_stoich  = reaction.reactants # dict, {spec: stoich}
 
             # flip reaction equation, e.g. A <=> B is now B <=> A
             str_orig = reaction.equation
@@ -125,16 +147,16 @@ class pes_reaction():
             print("flipped equation: ", str_orig, self.equation)
 
         else:
-            reactants_obj = reaction.reactants
-            products_obj = reaction.products
+            self.reac_stoich = reaction.reactants
+            self.prod_stoich  = reaction.products
             self.equation = reaction.equation
 
         # lookup each reactant, put in dictionary as 
         # {species_name : enthalpy at phase temp (in Ev) * stoich coeff}
         total_reac_enth = 0
-        reac_str = "+".join(reactants_obj)
+        reac_str = "+".join(self.reac_stoich)
 
-        for i in reactants_obj: 
+        for i in self.reac_stoich: 
             if i in phase_gas.species_names:
                 phase = phase_gas
             elif i in phase_surf.species_names:
@@ -142,16 +164,16 @@ class pes_reaction():
             else: 
                 logging.error(f"species {i} cannot be found")
 
-            total_reac_enth += reactants_obj[i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
+            total_reac_enth += self.reac_stoich[i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
             self.ind_reac.append(i)
 
         self.reactants[reac_str] = total_reac_enth 
         self.reactants[reac_str] = round(self.reactants[reac_str],3)
 
         total_prod_enth = 0
-        prod_str = "+".join(products_obj)
+        prod_str = "+".join(self.prod_stoich )
 
-        for i in products_obj: 
+        for i in self.prod_stoich : 
             if i in phase_gas.species_names:
                 phase = phase_gas
             elif i in phase_surf.species_names:
@@ -159,7 +181,7 @@ class pes_reaction():
             else: 
                 logging.error(f"species {i} cannot be found")
 
-            total_prod_enth += products_obj[i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
+            total_prod_enth += self.prod_stoich [i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
             self.ind_prod.append(i)
         
         self.products[prod_str] = total_prod_enth 
@@ -270,7 +292,7 @@ class pes_plot():
         
         for spec_c in self.comb_species_list:
             for rxn in self.reaction_list:
-                if spec_c.name in rxn.reactants and rxn.position == spec_c.position + 1:
+                if spec_c.link_rxn(rxn) == 1:
                     self.diagram.add_link(
                         spec_c.index, 
                         rxn.index,
@@ -278,7 +300,7 @@ class pes_plot():
                         ls='--',
                         linewidth=1,
                         )
-                elif spec_c.name in rxn.products and rxn.position == spec_c.position - 1:
+                elif spec_c.link_rxn(rxn) == -1:
                     self.diagram.add_link(
                         rxn.index, 
                         spec_c.index,
@@ -338,32 +360,37 @@ class pes_plot():
         # species1 + species2 
         # and 
         # species2 + species 1
-        reac_perms = []
-        if isinstance(species, (list, tuple)):
-            # if each entry is just the species name, permutate w/o stoichiometry
-            if isinstance(species[0], str):
-                perms = itertools.permutations(species)
-                for s in list(perms):
-                    reac_str = "+".join(s)
-                    reac_perms.append(reac_str)
-            # add stoichiometry if specified. 
-            elif isinstance(species[0], tuple):
-                stoich_spec = []
-                for spec, stoich in species: 
-                    if stoich > 1:
-                        stoich_spec.append(str(stoich) + spec)
-                    else:
-                        stoich_spec.append(spec)
+        # it would be good to figure out how to standardize the arguments so 
+        # that is can accept (species, stoich) instead of only (species, stoich)
+        reac_perms = []  
+
+        # if each entry is just the species name, permutate w/o stoichiometry
+        if isinstance(species[0], str):
+            perms = itertools.permutations(species)
+            for s in list(perms):
+                reac_str = "+".join(s)
+                reac_perms.append(reac_str)
+        
+        # add stoichiometry if specified. 
+        elif isinstance(species[0], tuple):
+            stoich_spec = []
+            for spec, stoich in species: 
+                if stoich > 1:
+                    stoich_spec.append(str(stoich) + spec)
+                else:
+                    stoich_spec.append(spec)
+            if len(species) > 1:
                 perms = itertools.permutations(stoich_spec)
                 for s in list(perms):
                     reac_str = "+".join(s)
                     reac_perms.append(reac_str)
-        print("reac_perms: ", reac_perms)                
-                    
-
+            else: 
+                perms = stoich_spec
+                reac_str = perms
+                reac_perms = reac_str                  
 
         if any((spec_c.name in reac_perms and spec_c.position == position) for spec_c in self.comb_species_list):
-                print(f'species {reac_perms[0]} already in this diagram position')
+            print(f'species {reac_perms[0]} already in this diagram position')
 
         else:
             spec_list = []
