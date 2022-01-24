@@ -44,6 +44,8 @@ class single_species():
 class comb_species():
     """
     makes a grouping of reactants or products. can be used with a single species. 
+    species - a list of tuples with the arguments for the reactant name and 
+    stoichiometry in the form [(str, int),], or a list of strings  
     """
     def __init__(
             self,
@@ -54,12 +56,24 @@ class comb_species():
 
         self.h_eV = 0
         self.name_list = []
-        for spec in species: 
-            self.h_eV += (spec.thermo.h(temp)/1000**2)/96
-            self.name_list.append(spec.name)
+        self.stoich_name_list = []
+        if isinstance(species[0], str):
+            for spec in species: 
+                self.h_eV += (spec.thermo.h(temp)/1000**2)/96
+                self.name_list.append(spec.name)
+
+        elif isinstance(species[0], tuple):
+            for spec,stoich in species: 
+                self.h_eV += stoich*(spec.thermo.h(temp)/1000**2)/96
+                self.name_list.append(spec.name)
+                if stoich > 1:
+                    self.stoich_name_list.append(str(stoich) + spec.name)
+                else: 
+                    self.stoich_name_list.append(spec.name)
         
+
         self.energy = round(self.h_eV, 3)
-        self.name = "+".join(self.name_list)
+        self.name = "+".join(self.stoich_name_list)
         self.species = species
         self.position = position
         self.index = -1 #index in diagram. used for connections
@@ -281,7 +295,7 @@ class pes_plot():
         self.diagram.plot(show_IDs=True, ylabel="Energy / $eV$", width=20, height=10)
         
     
-    def add_species(self, species, position):
+    def add_specie(self, species, position):
         """
         accepts 
         species - a string for a species 
@@ -309,7 +323,7 @@ class pes_plot():
         else: 
             print(f'species {species} could not be found, so it was not added')
 
-    def add_combined_species(self, species, position):
+    def add_combined_specie(self, species, position):
         """
         accepts 
         species - a list of strings for a the species 
@@ -326,25 +340,50 @@ class pes_plot():
         # species2 + species 1
         reac_perms = []
         if isinstance(species, (list, tuple)):
-            perms = itertools.permutations(species)
-            for set in list(perms):
-                reac_str = "+".join(set)
-                reac_perms.append(reac_str)
+            # if each entry is just the species name, permutate w/o stoichiometry
+            if isinstance(species[0], str):
+                perms = itertools.permutations(species)
+                for s in list(perms):
+                    reac_str = "+".join(s)
+                    reac_perms.append(reac_str)
+            # add stoichiometry if specified. 
+            elif isinstance(species[0], tuple):
+                stoich_spec = []
+                for spec, stoich in species: 
+                    if stoich > 1:
+                        stoich_spec.append(str(stoich) + spec)
+                    else:
+                        stoich_spec.append(spec)
+                perms = itertools.permutations(stoich_spec)
+                for s in list(perms):
+                    reac_str = "+".join(s)
+                    reac_perms.append(reac_str)
+        print("reac_perms: ", reac_perms)                
+                    
 
 
         if any((spec_c.name in reac_perms and spec_c.position == position) for spec_c in self.comb_species_list):
-                print(f'species {species} already in this diagram position')
+                print(f'species {reac_perms[0]} already in this diagram position')
 
         else:
             spec_list = []
-            for spec in species:
-                if spec in self.gas.species_names:
-                    spec_list.append(self.gas.species(spec))
-                elif spec in self.surf.species_names:
-                    spec_list.append(self.surf.species(spec))
-                else: 
-                    print(f'species {species} could not be found, so it was not added')
-          
+            if isinstance(species[0], str):
+                for spec in species:
+                    if spec in self.gas.species_names:
+                        spec_list.append(self.gas.species(spec))
+                    elif spec in self.surf.species_names:
+                        spec_list.append(self.surf.species(spec))
+                    else: 
+                        print(f'species {species} could not be found, so it was not added')
+            if isinstance(species[0], tuple): 
+                for spec, stoich in species:                             
+                    if spec in self.gas.species_names:
+                        spec_list.append((self.gas.species(spec), stoich))
+                    elif spec in self.surf.species_names:
+                        spec_list.append((self.surf.species(spec),stoich))
+                    else: 
+                        print(f'species {species} could not be found, so it was not added')
+
             if len(spec_list) == len(species):
                 new_comb_species = comb_species(
                     spec_list,
@@ -390,3 +429,25 @@ class pes_plot():
         else: 
             print(f'species {species} could not be found, so it was not added')
 
+
+    def add_species(self, species, position):
+        """
+        add multiple species
+        """
+        for spec in species:
+            self.add_specie(spec, position)
+
+    def add_combined_species(self, species, position):
+        """
+        add multiple combined species objects (accepts list of lists)
+        """
+        for spec_c in species:
+            self.add_combined_specie(spec_c, position)
+
+    def add_reactions(self, reactions, position, reverse=False):
+
+        """
+        add multiple reactions
+        """
+        for rxn in reactions:
+            self.add_reaction(rxn, position, reverse)
