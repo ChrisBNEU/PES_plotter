@@ -20,11 +20,14 @@ import copy
 
 class single_species():
     """
-    takes a single "species" cantera object. 
+    takes a single "species" cantera object and makes an object for 
+    diagramming that species on a potential energy plot.
 
-    Arguments:
-    Energy - enthalpy, for y placement on energy diagram
-    level - x position on energy diagram. integer 0, 1, 2, etc. 
+    species - a string with the species name as it is written in the Cantera 
+            file. 
+    position - an integer determining what the x position the species will
+            occupy on the pes plot
+    temp - the temperature of the system being studied. 
     """
     def __init__(
             self,
@@ -42,9 +45,12 @@ class single_species():
 
 class comb_species():
     """
-    makes a grouping of reactants or products. can be used with a single species. 
-    species - a list of tuples with the arguments for the reactant name and 
-    stoichiometry in the form [(str, int),], or a list of strings  
+    makes a grouping of reactants or products. Can be used with a single species. 
+    species - can be either of the following: 
+            a list of tuples with the arguments for the reactant name and 
+            stoichiometry in the form [(str, int),], or a list of strings 
+            a list of strings that are simply the species names.
+
     """
     def __init__(
             self,
@@ -102,19 +108,19 @@ class comb_species():
 
 class pes_reaction():
     """
-    feed in a cantera reaction, get an object out of it that we can use for making a chart
+    feed in a cantera reaction, get an object out of it that we can use for 
+    making a chart
 
     arguments: 
     reaction - a ct reaction object
     phase_gas - gas phase in mechanism (for looking up species)
     phase_surf - solid phase in mechanism (for looking up species)
-    reverse - bool, True if we swap reactants and products, and change Ea to Ea from products
+    reverse - bool, True if we swap reactants and products, and change Ea to Ea 
+            from products
 
     properties:
     reactants - dict, reactant string as key (e.g. "CO2+H2O"), combined Hf as value
     products - dict, reactant string as key (e.g. "CO2+H2O"), combined Hf as value
-    ind_reac - list, individual reactant strings that participate in the reaction
-    ind_prod - list, individual product strings that participate in the reaction
     barrier - float, Ea for reaction as value
     equation - string, cantera reaction equation
     """
@@ -131,8 +137,6 @@ class pes_reaction():
         self.equation = reaction.equation
         self.reactants  = {}  # combined reactants
         self.products  = {}   # combined products
-        self.ind_reac = []    # individual reactants
-        self.ind_prod = []    # individual products
 
         if reverse:
             self.reac_stoich = reaction.products   # dict, {spec: stoich}
@@ -165,7 +169,6 @@ class pes_reaction():
                 logging.error(f"species {i} cannot be found")
 
             total_reac_enth += self.reac_stoich[i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
-            self.ind_reac.append(i)
 
         self.reactants[reac_str] = total_reac_enth 
         self.reactants[reac_str] = round(self.reactants[reac_str],3)
@@ -182,7 +185,6 @@ class pes_reaction():
                 logging.error(f"species {i} cannot be found")
 
             total_prod_enth += self.prod_stoich [i] * (phase.species(i).thermo.h(phase.T)/1000**2)/96
-            self.ind_prod.append(i)
         
         self.products[prod_str] = total_prod_enth 
         self.products[prod_str] = round(self.products[prod_str],3)
@@ -209,11 +211,11 @@ class pes_plot():
     def __init__(
         self,
         yaml_file,
-        temp=528,
-        press=75,
+        temp=300,
+        press=1,
         ):
         """
-        initialize model
+        initialize cantera model for PES plot
         yaml_file = cti or yaml file for mechanism
         temp = temperature (K)
         press = pressure (atm)
@@ -242,16 +244,17 @@ class pes_plot():
         self.reaction_list = []
 
     def purge(self, position):
-        # purge all components at a given position
-        # make copies for iterating
-
+        """
+        purge all components at a given position
+        make copies for iterating
+        """
         self.species_list = list(filter(lambda num: num.position != position ,self.species_list))
         self.comb_species_list = list(filter(lambda num: num.position != position ,self.comb_species_list))
         self.reaction_list = list(filter(lambda num: num.position != position ,self.reaction_list))
 
     def update_diag_data(self):
         """
-
+        updates the PyEnergyDiagram object's data. called each time "plot" is called
         """
         self.diagram.reset()
         mechanism_list = self.species_list+self.comb_species_list+self.reaction_list
@@ -289,7 +292,8 @@ class pes_plot():
                             ls='--',
                             linewidth=1,
                             )
-        
+        # for combined species objects, automatically draw a link between 
+        # reactions where it is either a reactant or a product. 
         for spec_c in self.comb_species_list:
             for rxn in self.reaction_list:
                 if spec_c.link_rxn(rxn) == 1:
@@ -310,16 +314,20 @@ class pes_plot():
                         )
 
 
-    # def update_diagram_links():
+    
     def plot(self):
+        """
+        plot the potential energy surface
+        """
         self.update_diag_data()
         self.diagram.offset = 0.01
-        self.diagram.plot(show_IDs=True, ylabel="Energy / $eV$", width=20, height=10)
+        self.diagram.plot(show_IDs=True, ylabel="Energy / $eV$", width=20, height=20)
         
     
     def add_specie(self, species, position):
         """
-        accepts 
+        adds a single species to your PES plot.
+        
         species - a string for a species 
         position - an integer for the position of the species
         """
@@ -347,14 +355,19 @@ class pes_plot():
 
     def add_combined_specie(self, species, position):
         """
-        accepts 
-        species - a list of strings for a the species 
+        adds a single group of species (i.e. reactants or products) to your 
+        potential energy plot. will be displayed as 
+        species - can be either of the following: 
+                    a list of strings for the species to be added (will assume 
+                    that the stoichiometric coefficient is = 1)
+                    a list of tuples, in the following format with the species_name 
+                    and the stoichiometric coefficient, e.g.
+                    [("CH4, 1), (H2,2)]
         position - an integer for the position of the species
         """
 
         if len(species) > 3:
             logging.error("4 reactants and beyond not supported")
-
 
         # check for combined species 
         # species1 + species2 
@@ -424,9 +437,12 @@ class pes_plot():
 
     def add_reaction(self, reaction, position, reverse=False):
         """
+        adds a reaction to the Potential energy surface plot. 
         accepts 
         reaction - a string for the reaction
         position - an integer for the position of the reaction
+        reverse - whether or not the reaction should be "flipped" so it 
+                displays in reverse.
         """
 
         if any((reaction==rxn.orig_equation and position==rxn.position) for rxn in self.reaction_list):
@@ -466,7 +482,12 @@ class pes_plot():
 
     def add_combined_species(self, species, position):
         """
-        add multiple combined species objects (accepts list of lists)
+        add multiple combined species objects. accepts list of lists, 
+        elements in sublist can be tuples or strings, e.g.
+        [
+            [(CH4, 2), (H2,2)],
+            [(CO2,2), CO,1)],
+        ]
         """
         for spec_c in species:
             self.add_combined_specie(spec_c, position)
@@ -474,7 +495,7 @@ class pes_plot():
     def add_reactions(self, reactions, position, reverse=False):
 
         """
-        add multiple reactions
+        add multiple reactions, accepts a list of strings.
         """
         for rxn in reactions:
             self.add_reaction(rxn, position, reverse)
